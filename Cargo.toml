@@ -1,0 +1,13 @@
+[package]
+name = "spotify-round-robin-shuffler"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+itertools = "0.12.1"
+rand = "0.8.5"
+rspotify = { version = "0.13.1", default-features = false, features = ["env-file", "client-ureq", "ureq-rustls-tls", "cli"] }
+# tokio = { version = "1.37.0", features = ["full"] }
