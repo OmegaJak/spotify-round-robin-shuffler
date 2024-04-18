@@ -1,9 +1,9 @@
+use std::time::Duration;
+
 use itertools::Itertools;
 use rand::{seq::SliceRandom, thread_rng};
 use rspotify::{
-    clients::{BaseClient, OAuthClient},
-    model::{FullTrack, PlayableItem, PlaylistId},
-    scopes, AuthCodeSpotify, Credentials, OAuth,
+    clients::{BaseClient, OAuthClient}, model::{FullTrack, PlayableItem, PlaylistId}, scopes, AuthCodeSpotify, ClientError, Credentials, OAuth
 };
 use clap::Parser;
 
@@ -35,7 +35,12 @@ fn main() {
     // RSPOTIFY_CLIENT_ID, RSPOTIFY_CLIENT_SECRET, and RSPOTIFY_REDIRECT_URI set.
     let creds = Credentials::from_env().unwrap();
 
-    let scopes = scopes!("playlist-modify-public");
+    let scopes = scopes!(
+        "playlist-read-collaborative",
+        "playlist-read-private",
+        "playlist-modify-public",
+        "playlist-modify-private"
+    );
     println!("{:#?}", std::env::var("RSPOTIFY_REDIRECT_URI"));
     let oauth = OAuth::from_env(scopes).unwrap();
 
@@ -106,14 +111,7 @@ fn main() {
             .unwrap();
         println!("({}/{}) moving {current_index} to {target_index}", target_index + 1, playlist_mirror.len());
         if !args.dry_run {
-            let result = spotify.playlist_reorder_items(
-                playlist_id.clone(),
-                Some(current_index.try_into().unwrap()),
-                Some(target_index.try_into().unwrap()),
-                Some(1),
-                last_snapshot_id.as_deref(),
-            ).unwrap();
-            last_snapshot_id = Some(result.snapshot_id.to_owned());
+            reorder_respecting_rate_limiting(&spotify, &playlist_id, current_index, target_index, &mut last_snapshot_id);
         }
         
         let el = playlist_mirror.remove(current_index);
@@ -121,6 +119,48 @@ fn main() {
     }
 
     println!("Reordering Complete!");
+}
+
+fn reorder_respecting_rate_limiting(spotify: &AuthCodeSpotify, playlist_id: &PlaylistId<'_>, current_index: usize, target_index: usize, last_snapshot_id: &mut Option<String>) {
+    let mut attempts = 0;
+    while attempts < 10 {
+        match spotify.playlist_reorder_items(
+            playlist_id.clone(),
+            Some(current_index.try_into().unwrap()),
+            Some(target_index.try_into().unwrap()),
+            Some(1),
+            last_snapshot_id.as_deref(),
+        ) {
+            Ok(res) => {
+                *last_snapshot_id = Some(res.snapshot_id.to_owned());
+                break;
+            },
+            Err(err) => {
+                let ClientError::Http(err) = err else {
+                    panic!("Error reordering: {}", err);
+                };
+
+                match *err {
+                    rspotify::http::HttpError::StatusCode(res) => {
+                        if res.status() == 429 {
+                            let retry_after = res.header("Retry-After").map(|s| s.parse::<u64>().ok()).flatten();
+                            if let Some(retry_after) = retry_after {
+                                println!("Getting rate limited, told to retry after {} seconds (attempt #{})", retry_after, attempts + 1);
+                                std::thread::sleep(Duration::from_secs(retry_after));
+                                attempts += 1;
+                                continue;
+                            }
+                        }
+
+                        panic!("Error reordering: {:#?}", res);
+                    },
+                    _ => {
+                        panic!("Error reordering: {}", err);
+                    }
+                }
+            },
+        }
+    }
 }
 
 fn print_tracks(original_playlist: &Vec<PlaylistTrack>) {
